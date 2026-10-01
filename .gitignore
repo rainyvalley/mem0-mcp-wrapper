@@ -1,0 +1,15 @@
+# Secrets — never commit
+secrets.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Data
+*.db
+*.db-shm
+*.db-wal
+qdrant-storage/
