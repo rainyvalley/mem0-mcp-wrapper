@@ -182,9 +182,15 @@ Optional (Crush-side behavior config, in the same crushrc):
 | `search_memory(query, user_id?, top_k?, threshold?)` | Scored similarity search in the user's space |
 | `add_memory(messages, user_id?, infer?)` | `messages` = JSON array of role/content; `infer: true` runs LLM fact extraction |
 | `list_memories(user_id?, limit?)` | Everything stored for a user, newest first |
-| `delete_memory(memory_id)` | Remove one memory (IDs come from search/list) |
+| `get_memory(memory_id)` | One memory in full — text, metadata, timestamps |
+| `update_memory(memory_id, text?, metadata_json?)` | Edit text/metadata directly, no LLM re-inference |
+| `memory_history(memory_id)` | Audit trail (ADD/UPDATE/DELETE with before/after text) |
+| `delete_memory(memory_id)` | Remove one memory |
 | `delete_all_memories(user_id)` | Destructive; **refused** for the `MEM0_DEFAULT_USER` unless `MEM0_ALLOW_WIPE_DEFAULT=1` is set in the container |
 | `mem0_health()` | Backend status: LLM + embedder in use |
+
+All tools are thin proxies to the mem0 REST API (same names, same auth chain),
+so behavior stays identical whether called over MCP or plain HTTP.
 
 ## Configuration
 
@@ -219,6 +225,30 @@ Optional (Crush-side behavior config, in the same crushrc):
 `mem0_url`, `mem0_api_key`, `user_id_field` (email|id), `top_k`, `threshold`,
 `search_timeout` (seconds; search bursts serialize behind local embed loads),
 `learn`, `show_status`, `priority`. Per-user override: `enabled`.
+
+## Comparison with other mem0 MCP servers
+
+The most complete alternative is [`pinkpixel-dev/mem0-mcp`](https://github.com/pinkpixel-dev/mem0-mcp)
+(Node/TypeScript, ~16 tools). Different goals, different tradeoffs:
+
+| | **mem0-mcp-wrapper** | **pinkpixel-dev/mem0-mcp** |
+|---|---|---|
+| Storage | Your own **Qdrant + Ollama** via a plain self-hosted mem0 REST API | mem0 **cloud**, **Supabase** (needs an OpenAI API key for embeddings), or **local in-memory** (non-persistent, dev only) |
+| Data locality | 100% local — no cloud account, nothing leaves your machines | Cloud mode stores on mem0.ai; Supabase mode calls OpenAI for embeddings |
+| Shared memory | **The point** — Crush, Open WebUI, scripts, anything: **one memory per user** | Each MCP client spawns its **own** stdio process/store per config |
+| Multi-machine | Streamable HTTP server on your network; any LAN client connects | stdio only — a local process per client, per machine |
+| Open WebUI | Ships a memory Filter (Function) + install guide | None |
+| Tools | 9 focused CRUD + search + audit | ~16, incl. batch updates/deletes, exports, feedback rating (several cloud-only) |
+| Auth | Static bearer at the MCP endpoint + bearer to the REST API | Environment API keys; no separate MCP-layer auth |
+| Runtime | Python, docker compose, pinned deps | Node.js/npm |
+
+**When the pinkpixel server fits better**: single-user, single-machine setups where you already
+pay for mem0 cloud or run Supabase/pgvector anyway, or you specifically want exports, batch
+operations, or memory quality feedback.
+
+**When this kit fits better**: data has to stay local (self-hosted mem0 on your Qdrant), multiple
+clients across machines must share **one** memory per user, Open WebUI should join that memory,
+or you just want a small auditable service instead of a per-client process.
 
 ## Performance notes
 

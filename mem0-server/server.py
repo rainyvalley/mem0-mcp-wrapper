@@ -5,6 +5,9 @@ Endpoints (all require `Authorization: Bearer $MEM0_API_KEY` when that is set):
   POST   /memories            {messages, user_id, metadata?, infer?}
   POST   /search              {query, user_id, top_k?, threshold?}
   GET    /memories?user_id=   list a user's memories
+  GET    /memories/{id}       fetch one memory
+  PUT    /memories/{id}       {text?, metadata?} edit a memory
+  GET    /memories/{id}/history   audit trail (ADD/UPDATE/DELETE events)
   DELETE /memories/{id}
   DELETE /memories?user_id=   wipe a user's memories
 """
@@ -92,6 +95,11 @@ class SearchRequest(BaseModel):
     threshold: float = 0.3
 
 
+class UpdateRequest(BaseModel):
+    text: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "llm": CONFIG["llm"]["config"]["model"], "embedder": CONFIG["embedder"]["config"]["model"]}
@@ -120,6 +128,32 @@ async def list_memories(user_id: str, limit: int = 1000):
 async def delete(memory_id: str):
     await run_in_threadpool(memory.delete, memory_id)
     return {"deleted": memory_id}
+
+
+@app.get("/memories/{memory_id}", dependencies=[Depends(auth)])
+async def get_memory(memory_id: str):
+    """Fetch a single memory by id (get the id from /search or the list endpoint)."""
+    m = await run_in_threadpool(memory.get, memory_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="memory not found")
+    return m
+
+
+@app.put("/memories/{memory_id}", dependencies=[Depends(auth)])
+async def update_memory(memory_id: str, req: UpdateRequest):
+    """Edit a memory's text and/or metadata. Text edits go back through the LLM-free
+    update path; embeddings/derived data refresh on the next search."""
+    if req.text is None and req.metadata is None:
+        raise HTTPException(status_code=422, detail="nothing to update: pass text and/or metadata")
+    return await run_in_threadpool(
+        memory.update, memory_id, text=req.text, metadata=req.metadata
+    )
+
+
+@app.get("/memories/{memory_id}/history", dependencies=[Depends(auth)])
+async def memory_history(memory_id: str):
+    """Audit trail for a memory: ADD/UPDATE/DELETE events from the history db."""
+    return await run_in_threadpool(memory.history, memory_id)
 
 
 @app.delete("/memories", dependencies=[Depends(auth)])

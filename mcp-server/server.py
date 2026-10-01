@@ -155,6 +155,81 @@ def list_memories(user_id: str = DEFAULT_USER, limit: int = 1000) -> str:
 
 
 @mcp.tool()
+def get_memory(memory_id: str) -> str:
+    """Fetch one long-term memory by its ID, including metadata and timestamps.
+
+    Args:
+        memory_id: UUID of the memory (get IDs from search_memory or list_memories).
+    """
+    try:
+        with _client() as c:
+            r = c.get(f"/memories/{memory_id}")
+            r.raise_for_status()
+            m = r.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return f"Memory {memory_id} not found."
+        return _tool_err("get", e)
+    except Exception as e:
+        return _tool_err("get", e)
+    return json.dumps(m, ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def update_memory(memory_id: str, text: str = "", metadata_json: str = "") -> str:
+    """Edit an existing memory's text and/or metadata (no LLM re-inference).
+
+    Args:
+        memory_id: UUID of the memory to edit.
+        text: Replacement text for the memory (empty string = leave text unchanged).
+        metadata_json: JSON object to merge into the memory's metadata
+            (empty string = leave metadata unchanged).
+    """
+    if not text and not metadata_json:
+        return "Nothing to update: pass text and/or metadata_json."
+    body = {}
+    if text:
+        body["text"] = text
+    if metadata_json:
+        try:
+            body["metadata"] = json.loads(metadata_json)
+        except json.JSONDecodeError as e:
+            return f"metadata_json must be a JSON object: {e}"
+    try:
+        with _client() as c:
+            r = c.put(f"/memories/{memory_id}", json=body)
+            r.raise_for_status()
+            return "Memory updated: " + json.dumps(r.json(), ensure_ascii=False, indent=1)
+    except Exception as e:
+        return _tool_err("update", e)
+
+
+@mcp.tool()
+def memory_history(memory_id: str) -> str:
+    """Show the audit trail of a memory (ADD/UPDATE/DELETE events with before/after text).
+
+    Args:
+        memory_id: UUID of the memory to inspect.
+    """
+    try:
+        with _client() as c:
+            r = c.get(f"/memories/{memory_id}/history")
+            r.raise_for_status()
+            events = r.json()
+    except Exception as e:
+        return _tool_err("history", e)
+    if not events:
+        return "No history events recorded for this memory."
+    lines = []
+    for e in events:
+        old = (e.get("old_memory") or "")[:60]
+        new = (e.get("new_memory") or "")[:60]
+        lines.append(f"[{e.get('event', '?')}] {e.get('created_at', '')[:19]}  "
+                     f"old={old!r} -> new={new!r}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def delete_memory(memory_id: str) -> str:
     """Delete a single long-term memory by its ID (get IDs from search_memory or list_memories).
 
