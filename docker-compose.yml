@@ -1,6 +1,7 @@
-# mem0's REST API is NOT part of this repo (mem0 is its own product - see README).
-# Either run mem0's OpenMemory stack and set MEM0_URL to its API URL, or uncomment
-# the reference `mem0` service below (builds mem0-server/Dockerfile, unpinned mem0ai).
+# mem0 REST API: batteries-included in this compose (see mem0 service below, built from
+# mem0-server/). It's OUR wrapper code around the unpinned mem0ai library - mem0 itself
+# is untouched. Prefer mem0's official OpenMemory stack instead? Comment this service out
+# and set MEM0_URL to its API URL.
 
 services:
   mem0-mcp:
@@ -22,6 +23,7 @@ services:
     ports:
       - "8300:8300"
     depends_on:
+      - mem0
       - ollama
     # If your mem0 API is a compose service too, add it to depends_on.
     restart: unless-stopped
@@ -32,32 +34,32 @@ services:
     #       memory: 256M
     # NOTE: the MCP bearer (MCP_BEARER_TOKEN) lives in secrets.env; no/wrong token -> 401.
 
-  # ── Reference mem0 REST API (OPTIONAL) ─────────────────────────────────
+  # ── mem0 REST API (batteries included) ─────────────────────────────────
   # ~120-line FastAPI wrapper around the mem0 library exposing the 9 endpoints
   # the MCP wrapper expects. mem0ai is UNPINNED on purpose (mem0 is its own
-  # fast-moving product). Most users should run mem0's official OpenMemory
-  # stack instead: https://docs.mem0.ai/openmemory/overview
-  #
-  # mem0:
-  #   container_name: mem0
-  #   build: ./mem0-server
-  #   image: local/mem0:latest
-  #   env_file:
-  #     - secrets.env     # MEM0_API_KEY (+ optional OLLAMA_API_KEY for cloud extraction)
-  #   environment:
-  #     - OLLAMA_URL=http://ollama:11434
-  #     - MEM0_EMBED_MODEL=nomic-embed-text
-  #     - MEM0_EMBED_DIMS=768
-  #     - QDRANT_HOST=qdrant
-  #     - MEM0_HISTORY_DB=/data/history.db
-  #   volumes:
-  #     - mem0-data:/data
-  #   ports:
-  #     - "127.0.0.1:8000:8000"   # host-only by default; publish to LAN if OWUI is remote
-  #   depends_on:
-  #     - qdrant
-  #     - ollama
-  #   restart: unless-stopped
+  # fast-moving product). If you'd rather run mem0's official OpenMemory stack,
+  # comment this service out and set MEM0_URL to its API URL:
+  # https://docs.mem0.ai/openmemory/overview
+  mem0:
+    container_name: mem0
+    build: ./mem0-server
+    image: local/mem0:latest
+    env_file:
+      - secrets.env     # MEM0_API_KEY (+ optional OLLAMA_API_KEY for cloud extraction)
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - MEM0_EMBED_MODEL=nomic-embed-text
+      - MEM0_EMBED_DIMS=768
+      - QDRANT_HOST=qdrant
+      - MEM0_HISTORY_DB=/data/history.db
+    volumes:
+      - mem0-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"   # host-only by default; publish to LAN if OWUI is remote
+    depends_on:
+      - qdrant
+      - ollama
+    restart: unless-stopped
 
   qdrant:
     container_name: qdrant

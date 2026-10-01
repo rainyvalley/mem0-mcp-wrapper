@@ -26,7 +26,7 @@ A thin MCP (Model Context Protocol) wrapper around a self-hosted [mem0](https://
 
 To run a **locally hosted version of memories** that everything can handle. [mem0](https://github.com/mem0ai/mem0) is self-hostable (its library runs on Qdrant + Ollama — see [mem0's docs](https://docs.mem0.ai/) and [OpenMemory](https://docs.mem0.ai/openmemory/overview) for the official self-host path), but each MCP server around it bundles its **own private vector store** — a parallel memory that never meets the rest of your stack. This kit wraps a plain mem0 REST API and exposes it three ways (MCP, REST, Open WebUI filter), so agents, chats, and scripts all read and write **one** Qdrant-backed memory per user.
 
-> This repo is the wrapper layer only. mem0 itself is an independent project; for installing it, see [mem0's install docs](https://docs.mem0.ai/).
+> The kit runs mem0 entirely inside your own containers via its library (unpinned dependency); mem0's own code is never edited. Prefer their official OpenMemory stack? Swap it in with one compose edit — the wrapper points at `MEM0_URL` either way.
 
 ## Repo contents
 
@@ -60,19 +60,19 @@ Fill in:
 - `MCP_BEARER_TOKEN` — protects the MCP endpoint itself (what MCP clients send)
 - `OLLAMA_API_KEY` — optional; leave it commented to use your local Ollama model for fact extraction
 
-### 3. What this project runs
+### 3. What runs, and what's whose
 
-Only the **MCP wrapper** and the **Open WebUI filter belong to this project**. The mem0 REST API
-they talk to is NOT bundled or pinned here — mem0 is its own fast-moving project/product. Point the
-wrapper at whatever serves your memories:
+The compose file is **batteries included**: one `docker compose up -d --build` brings up the full
+memory stack. Nothing here edits mem0 — its library is used as a plain dependency, untouched:
+`mem0-server/server.py` (this repo) imports the `mem0ai` pip package, which talks to Qdrant +
+Ollama. mem0 stays its own fast-moving product; it's deliberately NOT version-pinned here.
 
-- **Option A (recommended): run mem0's own OpenMemory / REST stack** — official install instructions:
-  <https://docs.mem0.ai/openmemory/overview> (self-hostable docker compose; memories land in your
-  Qdrant). Whatever its API URL is, that's your `MEM0_URL`.
-- **Option B (reference only): build the minimal REST API in [`mem0-server/`](mem0-server/)** —
-  ~120 lines of FastAPI that proxy the mem0 library (`mem0ai` unpinned; install whatever current
-  version you like). It exists as a readable example of the 9 endpoints the wrapper expects,
-  not as an artifact to pin to.
+- **`mem0` service (batteries-included default)** — build from [`mem0-server/`](mem0-server/):
+  ~120 lines of FastAPI implementing the 9 REST endpoints the wrapper expects on top of the
+  mem0 library (`mem0ai` unpinned; install whatever current release you like).
+- **Bring your own mem0 instead** — run [mem0's official OpenMemory stack](https://docs.mem0.ai/openmemory/overview)
+  (self-hostable docker compose, memories land in your Qdrant), point `MEM0_URL` at its API URL,
+  and comment out the `mem0` service below.
 
 ```bash
 docker compose up -d --build     # builds ONLY mem0-mcp from mcp-server/Dockerfile
@@ -81,7 +81,7 @@ docker compose up -d --build     # builds ONLY mem0-mcp from mcp-server/Dockerfi
 | Container | Built from | Role |
 |---|---|---|
 | `mem0-mcp` | `mcp-server/Dockerfile` | MCP server on :8300 (LAN-reachable) |
-| `mem0` | **your mem0 install** (Option A) or `mem0-server/Dockerfile` (Option B) | REST API on :8000 |
+| `mem0` | `mem0-server/Dockerfile` (default) — or your own OpenMemory stack | REST API on :8000 |
 | `qdrant` | official image | Vector store (no published ports — internal only) |
 | `ollama` | official image | Embeddings local; fact extraction (cloud if `OLLAMA_API_KEY` set) |
 
