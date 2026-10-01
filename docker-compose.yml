@@ -1,25 +1,63 @@
+# mem0's REST API is NOT part of this repo (mem0 is its own product - see README).
+# Either run mem0's OpenMemory stack and set MEM0_URL to its API URL, or uncomment
+# the reference `mem0` service below (builds mem0-server/Dockerfile, unpinned mem0ai).
+
 services:
-  mem0:
-    container_name: mem0
-    build: ./mem0-server
-    image: local/mem0:2.2.1
-    pull_policy: build  # built locally; never pulled from a registry
-    env_file:
-      - secrets.env   # MEM0_API_KEY (+ optional OLLAMA_API_KEY for cloud extraction)
+  mem0-mcp:
+    container_name: mem0-mcp
+    build: ./mcp-server
+    image: local/mem0-mcp:latest
+    pull_policy: build
     environment:
-      - OLLAMA_URL=http://ollama:11434      # local Ollama: embeddings (+ fallback extraction)
-      - MEM0_EMBED_MODEL=nomic-embed-text
-      - MEM0_EMBED_DIMS=768
-      - QDRANT_HOST=qdrant
-      - MEM0_HISTORY_DB=/data/history.db
-    volumes:
-      - mem0-data:/data
+      # Where the mem0 REST API lives (compose service name or LAN URL):
+      - MEM0_URL=http://mem0:8000
+      # MEM0_API_KEY comes from env_file — do NOT also set it via ${MEM0_API_KEY} here:
+      # compose substitutes that from the HOST shell (often blank) and `environment:`
+      # overrides `env_file`, silently blanking the key.
+      - MEM0_DEFAULT_USER=              # empty = callers must pass explicit user ids
+      # MEM0_ALLOW_WIPE_DEFAULT intentionally unset: delete_all_memories then refuses
+      # to wipe the default user.
+    env_file:
+      - secrets.env           # MEM0_API_KEY + MCP_BEARER_TOKEN (MCP endpoint auth)
     ports:
-      - "127.0.0.1:8000:8000"  # host-only by default; MCP server + OWUI reach it via the compose network
+      - "8300:8300"
     depends_on:
-      - qdrant
       - ollama
+    # If your mem0 API is a compose service too, add it to depends_on.
     restart: unless-stopped
+    # Optional memory hard cap (docker compose v2 syntax):
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 256M
+    # NOTE: the MCP bearer (MCP_BEARER_TOKEN) lives in secrets.env; no/wrong token -> 401.
+
+  # ── Reference mem0 REST API (OPTIONAL) ─────────────────────────────────
+  # ~120-line FastAPI wrapper around the mem0 library exposing the 9 endpoints
+  # the MCP wrapper expects. mem0ai is UNPINNED on purpose (mem0 is its own
+  # fast-moving product). Most users should run mem0's official OpenMemory
+  # stack instead: https://docs.mem0.ai/openmemory/overview
+  #
+  # mem0:
+  #   container_name: mem0
+  #   build: ./mem0-server
+  #   image: local/mem0:latest
+  #   env_file:
+  #     - secrets.env     # MEM0_API_KEY (+ optional OLLAMA_API_KEY for cloud extraction)
+  #   environment:
+  #     - OLLAMA_URL=http://ollama:11434
+  #     - MEM0_EMBED_MODEL=nomic-embed-text
+  #     - MEM0_EMBED_DIMS=768
+  #     - QDRANT_HOST=qdrant
+  #     - MEM0_HISTORY_DB=/data/history.db
+  #   volumes:
+  #     - mem0-data:/data
+  #   ports:
+  #     - "127.0.0.1:8000:8000"   # host-only by default; publish to LAN if OWUI is remote
+  #   depends_on:
+  #     - qdrant
+  #     - ollama
+  #   restart: unless-stopped
 
   qdrant:
     container_name: qdrant
@@ -28,34 +66,6 @@ services:
       - qdrant-data:/qdrant/storage
     restart: unless-stopped
     # NOTE: qdrant has NO published ports - reachable only inside the compose network. Deliberate.
-
-  mem0-mcp:
-    container_name: mem0-mcp
-    build: ./mcp-server
-    image: local/mem0-mcp:1.0.0
-    pull_policy: build
-    environment:
-      - MEM0_URL=http://mem0:8000
-      # MEM0_API_KEY comes from env_file - do NOT also set it via ${MEM0_API_KEY} here:
-      # compose substitutes that from the HOST shell (often blank) and `environment:`
-      # overrides `env_file`, silently blanking the key.
-      - MEM0_DEFAULT_USER=              # empty = callers must pass explicit user ids
-      # MEM0_ALLOW_WIPE_DEFAULT intentionally unset: delete_all_memories then refuses
-      # to wipe the default user.
-    env_file:
-      - secrets.env           # MEM0_API_KEY (mem0 REST auth)
-    volumes: []
-    # MCP bearer: put MCP_BEARER_TOKEN in secrets.env (chmod 600). No/wrong token -> 401.
-    ports:
-      - "8300:8300"
-    depends_on:
-      - mem0
-    restart: unless-stopped
-    # Optional memory hard cap (docker compose v2 syntax):
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 256M
 
   ollama:
     container_name: ollama

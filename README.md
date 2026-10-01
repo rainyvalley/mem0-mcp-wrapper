@@ -24,14 +24,16 @@ A thin MCP (Model Context Protocol) wrapper around a self-hosted [mem0](https://
 
 ## Why this exists
 
-To run a **locally hosted version of memories** that everything can handle. The mem0 library is self-hostable (Qdrant + Ollama), but each MCP server around it bundles its **own private vector store** — a parallel memory that never meets the rest of your stack. This kit splits mem0 behind a plain REST API and exposes it three ways (MCP, REST, Open WebUI filter), so agents, chats, and scripts all read and write **one** Qdrant-backed memory per user.
+To run a **locally hosted version of memories** that everything can handle. [mem0](https://github.com/mem0ai/mem0) is self-hostable (its library runs on Qdrant + Ollama — see [mem0's docs](https://docs.mem0.ai/) and [OpenMemory](https://docs.mem0.ai/openmemory/overview) for the official self-host path), but each MCP server around it bundles its **own private vector store** — a parallel memory that never meets the rest of your stack. This kit wraps a plain mem0 REST API and exposes it three ways (MCP, REST, Open WebUI filter), so agents, chats, and scripts all read and write **one** Qdrant-backed memory per user.
+
+> This repo is the wrapper layer only. mem0 itself is an independent project; for installing it, see [mem0's install docs](https://docs.mem0.ai/).
 
 ## Repo contents
 
 | Path | What it is |
 |---|---|
-| [`mcp-server/`](mcp-server/) | The MCP wrapper (streamable HTTP, bearer auth, 6 tools) |
-| [`mem0-server/`](mem0-server/) | The mem0 REST API server (FastAPI + mem0ai + Ollama + Qdrant) |
+| [`mcp-server/`](mcp-server/) | The MCP wrapper (streamable HTTP, bearer auth, 9 tools) |
+| [`mem0-server/`](mem0-server/) | *Optional reference*: a ~120-line minimal mem0 REST API (FastAPI + Ollama + Qdrant), unpinned `mem0ai` |
 | [`openwebui-filter/`](openwebui-filter/) | The Open WebUI Function (Filter) that injects/recalls memories in OWUI chats |
 | [`examples/`](examples/) + [`docker-compose.yml`](docker-compose.yml) | A complete working deployment |
 
@@ -58,22 +60,34 @@ Fill in:
 - `MCP_BEARER_TOKEN` — protects the MCP endpoint itself (what MCP clients send)
 - `OLLAMA_API_KEY` — optional; leave it commented to use your local Ollama model for fact extraction
 
-### 3. Build and start the containers
+### 3. What this project runs
+
+Only the **MCP wrapper** and the **Open WebUI filter belong to this project**. The mem0 REST API
+they talk to is NOT bundled or pinned here — mem0 is its own fast-moving project/product. Point the
+wrapper at whatever serves your memories:
+
+- **Option A (recommended): run mem0's own OpenMemory / REST stack** — official install instructions:
+  <https://docs.mem0.ai/openmemory/overview> (self-hostable docker compose; memories land in your
+  Qdrant). Whatever its API URL is, that's your `MEM0_URL`.
+- **Option B (reference only): build the minimal REST API in [`mem0-server/`](mem0-server/)** —
+  ~120 lines of FastAPI that proxy the mem0 library (`mem0ai` unpinned; install whatever current
+  version you like). It exists as a readable example of the 9 endpoints the wrapper expects,
+  not as an artifact to pin to.
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build     # builds ONLY mem0-mcp from mcp-server/Dockerfile
 ```
-
-What this builds and starts:
 
 | Container | Built from | Role |
 |---|---|---|
-| `mem0` | `mem0-server/Dockerfile` | mem0 REST API on :8000 (host-only by default) |
 | `mem0-mcp` | `mcp-server/Dockerfile` | MCP server on :8300 (LAN-reachable) |
+| `mem0` | **your mem0 install** (Option A) or `mem0-server/Dockerfile` (Option B) | REST API on :8000 |
 | `qdrant` | official image | Vector store (no published ports — internal only) |
 | `ollama` | official image | Embeddings local; fact extraction (cloud if `OLLAMA_API_KEY` set) |
 
-### 4. Pull the models Ollama needs
+### 4. Configure + pull the models Ollama needs
+
+Set `MEM0_URL` in `secrets.env` if your mem0 API isn't at `http://mem0:8000`, then:
 
 ```bash
 docker exec ollama ollama pull nomic-embed-text   # embeddings (required)
@@ -258,9 +272,15 @@ every angle you have.
 - **elvismdev/mem0-mcp-selfhosted**: closest in spirit - self-hosted Qdrant +
   Ollama - but it **embeds the mem0 library** (with contract tests against
   mem0's internal API) instead of wrapping a REST service, targets Claude
-  Code specifically (auto-reads Claude's OAuth token for extraction), and has
-  no compose deployment. Neo4j graph memory is a nice extra this kit does not
-  ship.
+  Code specifically, and has no compose deployment. Neo4j graph memory is a
+  nice extra this kit does not ship. Its neatest trick is **Claude-OAT
+  extraction**: when mem0 extracts durable facts from a conversation, the LLM
+  call can run on your **Claude Code subscription** instead of a metered API
+  key - the server auto-reads the OAuth access token (`sk-ant-oat...`) that
+  Claude Code stores in `~/.claude/.credentials.json` and reuses (and
+  auto-refreshes) it for those extraction calls. Clever, but it couples the
+  memory layer to Claude Code's private credential file; this kit keeps
+  extraction on your own Ollama/Ollama Cloud with two simple bearer tokens.
 - **tensakulabs/mem0-mcp**: reads straight from Qdrant, writes through an
   OpenMemory API, adds Neo4j graph queries. stdio-only, Claude-focused,
   requires you to already run an OpenMemory stack.
@@ -285,7 +305,9 @@ every angle you have.
   serialize behind Ollama's `OLLAMA_NUM_PARALLEL` slot — with a GPU squeezed by other workloads,
   embeddings can fall back to CPU (seconds per call). The OWUI filter's `search_timeout` valve
   (`default 60`) exists to ride that out.
-- Watch out for `mem0ai` version drift: pin it (compose pins `2.2.1`).
+- `mem0ai` is deliberately **unpinned** in the reference server (mem0 is its own
+  product that moves fast); pin it yourself if you want reproducible builds.
+  The MCP SDK (`mcp[cli]`) IS pinned - that's this repo's own API contract.
 
 ## Security notes
 
