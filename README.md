@@ -228,27 +228,55 @@ so behavior stays identical whether called over MCP or plain HTTP.
 
 ## Comparison with other mem0 MCP servers
 
-The most complete alternative is [`pinkpixel-dev/mem0-mcp`](https://github.com/pinkpixel-dev/mem0-mcp)
-(Node/TypeScript, ~16 tools). Different goals, different tradeoffs:
+Memory-MCP-land is crowded; here is where this kit sits. The alternatives fall
+into two camps: **vendors** (memory lives at a hosted endpoint) and
+**SDK-embedders** (the MCP server bundles the mem0 library and its own store
+config). This kit is the odd one out: the MCP layer is deliberately dumb and
+wraps a plain self-hosted mem0 REST API, so the same memory is reachable from
+every angle you have.
 
-| | **mem0-mcp-wrapper** | **pinkpixel-dev/mem0-mcp** |
-|---|---|---|
-| Storage | Your own **Qdrant + Ollama** via a plain self-hosted mem0 REST API | mem0 **cloud**, **Supabase** (needs an OpenAI API key for embeddings), or **local in-memory** (non-persistent, dev only) |
-| Data locality | 100% local — no cloud account, nothing leaves your machines | Cloud mode stores on mem0.ai; Supabase mode calls OpenAI for embeddings |
-| Shared memory | **The point** — Crush, Open WebUI, scripts, anything: **one memory per user** | Each MCP client spawns its **own** stdio process/store per config |
-| Multi-machine | Streamable HTTP server on your network; any LAN client connects | stdio only — a local process per client, per machine |
-| Open WebUI | Ships a memory Filter (Function) + install guide | None |
-| Tools | 9 focused CRUD + search + audit | ~16, incl. batch updates/deletes, exports, feedback rating (several cloud-only) |
-| Auth | Static bearer at the MCP endpoint + bearer to the REST API | Environment API keys; no separate MCP-layer auth |
-| Runtime | Python, docker compose, pinned deps | Node.js/npm |
+### The field
 
-**When the pinkpixel server fits better**: single-user, single-machine setups where you already
-pay for mem0 cloud or run Supabase/pgvector anyway, or you specifically want exports, batch
-operations, or memory quality feedback.
+| | **mem0-mcp-wrapper** (this kit) | mem0 (hosted MCP) | pinkpixel-dev/mem0-mcp | elvismdev/mem0-mcp-selfhosted | tensakulabs/mem0-mcp | OpenMemory MCP |
+|---|---|---|---|---|---|---|
+| Where memory lives | **Your Qdrant + Ollama** (self-hosted mem0 REST API) | mem0.ai cloud only | mem0 cloud / Supabase / local in-memory (dev) | **Your Qdrant** (+ optional Neo4j graph) | **Your Qdrant** (+ Neo4j, writes via an OpenMemory API) | self-hosted Docker stack (was) - removed from mem0 monorepo 2026-07 |
+| Shared across clients | **Yes** - one REST store, every client angle | Yes (cloud) | Per client-process store on local modes | Shared when clients pass the same user_id | Shared via one Qdrant + user scoping | Shared (one OpenMemory instance) |
+| Open WebUI integration | **Ships a memory Filter** | None | None | None | None | Was separate (UI + MCP), now archived |
+| Transport | Streamable HTTP (LAN service) | HTTPS cloud | stdio | stdio + SSE/streamable-http opt-in | stdio only | stdio (local Docker) |
+| MCP-layer auth | **Static bearer** (LAN-safe) | OAuth/API key | env keys only | Claude OAT / API key (upstream) | none (local trust) | none |
+| LLM for fact extraction | Ollama (local) or Ollama Cloud | mem0 cloud models | mem0 cloud models | Anthropic (Claude OAT!) or local Ollama | writes via OpenMemory API | bundled config |
+| Runtime | Python, docker compose, pinned deps | hosted | Node/npm | Python/uv, no compose | Python/uvx, no compose | Python docker (deprecated) |
+| Tools | 9 (CRUD + search + audit) | full cloud suite | ~16 incl. batch/export/rate (cloud-gated) | 11 + graph tools + hooks | 6 + graph reads via Neo4j | 4 |
 
-**When this kit fits better**: data has to stay local (self-hosted mem0 on your Qdrant), multiple
-clients across machines must share **one** memory per user, Open WebUI should join that memory,
-or you just want a small auditable service instead of a per-client process.
+### Notes on each
+
+- **mem0 hosted MCP** (`mcp.mem0.ai`): zero setup, mature engine, free tier
+  (10k adds/1k retrievals per month). Your memories live on their servers.
+- **pinkpixel-dev/mem0-mcp**: richest tool set; the batch/export/rating tools
+  are cloud-only. Supabase mode needs an OpenAI key for embeddings; local mode
+  is in-memory and non-persistent. Solo-machine use case.
+- **elvismdev/mem0-mcp-selfhosted**: closest in spirit - self-hosted Qdrant +
+  Ollama - but it **embeds the mem0 library** (with contract tests against
+  mem0's internal API) instead of wrapping a REST service, targets Claude
+  Code specifically (auto-reads Claude's OAuth token for extraction), and has
+  no compose deployment. Neo4j graph memory is a nice extra this kit does not
+  ship.
+- **tensakulabs/mem0-mcp**: reads straight from Qdrant, writes through an
+  OpenMemory API, adds Neo4j graph queries. stdio-only, Claude-focused,
+  requires you to already run an OpenMemory stack.
+- **OpenMemory MCP**: the former "official local" path - repo archived, the
+  monorepo path removed 2026-07. Historically important, no longer shipping.
+
+### When each fits
+
+- **Data must stay 100% local and every client shares one memory per user**
+  (Open WebUI chats AND CLI agents AND scripts) -> this kit: one compose file,
+  HTTP endpoint, bearer auth, OWUI filter included.
+- **You already pay for mem0 cloud and want the managed engine** -> hosted MCP.
+- **One machine, one Claude Code install, want graph memory or Claude-OAT
+  extraction for free** -> elvismdev or tensakulabs.
+- **You want batch operations/exports/feedback ratings on mem0 cloud** ->
+  pinkpixel-dev.
 
 ## Performance notes
 
