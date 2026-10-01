@@ -1,6 +1,6 @@
 # mem0-mcp-wrapper
 
-Give every MCP client on your network the **same long-term memory** your Open WebUI chats use.
+Give every MCP client on your network the **same long-term memory** — a locally hosted memory store everything can handle. No cloud accounts, no data leaving your machines: memories live in your own Qdrant, extracted by your own Ollama, served to anything that speaks MCP.
 
 A thin MCP (Model Context Protocol) wrapper around a self-hosted [mem0](https://github.com/mem0ai/mem0) REST API, plus the two other pieces of the stack it was built for:
 
@@ -24,7 +24,7 @@ A thin MCP (Model Context Protocol) wrapper around a self-hosted [mem0](https://
 
 ## Why this exists
 
-Every other mem0 MCP server we could find targets the **hosted mem0 platform** or embeds its **own private vector store** — neither of which shares memory with a self-hosted Open WebUI. This wrapper speaks to a plain self-hosted mem0 REST API instead, so an Open WebUI filter and your CLI agents read and write the **same** Qdrant-backed memory.
+To run a **locally hosted version of memories** that everything can handle. The mem0 library is self-hostable (Qdrant + Ollama), but each MCP server around it bundles its **own private vector store** — a parallel memory that never meets the rest of your stack. This kit splits mem0 behind a plain REST API and exposes it three ways (MCP, REST, Open WebUI filter), so agents, chats, and scripts all read and write **one** Qdrant-backed memory per user.
 
 ## Repo contents
 
@@ -35,40 +35,145 @@ Every other mem0 MCP server we could find targets the **hosted mem0 platform** o
 | [`openwebui-filter/`](openwebui-filter/) | The Open WebUI Function (Filter) that injects/recalls memories in OWUI chats |
 | [`examples/`](examples/) + [`docker-compose.yml`](docker-compose.yml) | A complete working deployment |
 
-## Quick start (docker compose)
+## Step-by-step deployment
 
-1. Create `secrets.env` (next to the compose file):
+### 1. Get the code
+
+```bash
+git clone https://github.com/rainyvalley/mem0-mcp-wrapper.git
+cd mem0-mcp-wrapper
+```
+
+### 2. Create your secrets file
+
+```bash
+cp .env.example secrets.env
+nano secrets.env            # or any editor
+openssl rand -hex 24        # run twice: once per REQUIRED value
+chmod 600 secrets.env
+```
+
+Fill in:
+- `MEM0_API_KEY` — protects the mem0 REST API (the MCP wrapper and Open WebUI filter both send it)
+- `MCP_BEARER_TOKEN` — protects the MCP endpoint itself (what MCP clients send)
+- `OLLAMA_API_KEY` — optional; leave it commented to use your local Ollama model for fact extraction
+
+### 3. Build and start the containers
+
+```bash
+docker compose up -d --build
+```
+
+What this builds and starts:
+
+| Container | Built from | Role |
+|---|---|---|
+| `mem0` | `mem0-server/Dockerfile` | mem0 REST API on :8000 (host-only by default) |
+| `mem0-mcp` | `mcp-server/Dockerfile` | MCP server on :8300 (LAN-reachable) |
+| `qdrant` | official image | Vector store (no published ports — internal only) |
+| `ollama` | official image | Embeddings local; fact extraction (cloud if `OLLAMA_API_KEY` set) |
+
+### 4. Pull the models Ollama needs
+
+```bash
+docker exec ollama ollama pull nomic-embed-text   # embeddings (required)
+docker exec ollama ollama pull qwen3:4b-instruct  # local fact extraction (skip if using cloud)
+```
+
+### 5. Verify
+
+```bash
+# mem0 REST health (LLM + embedder shown):
+curl -s http://127.0.0.1:8000/health -H "Authorization: Bearer $(grep ^MEM0_API_KEY secrets.env | cut -d= -f2)"
+
+# MCP endpoint alive (expect 200 + an SSE initialize response):
+curl -s -X POST http://127.0.0.1:8300/mcp \
+  -H "Authorization: Bearer $(grep ^MCP_BEARER_TOKEN secrets.env | cut -d= -f2)" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}'
+```
+
+Now integrate the clients you use:
+
+- **Integrate with Crush** — section 6
+- **Integrate with Open WebUI** — section 7
+- Other MCP clients: [`examples/mcp-clients.md`](examples/mcp-clients.md)
+
+---
+
+### 6. Integrate with Crush (CLI agent)
+
+Edit `~/.config/crush/crushrc` (Bash syntax) and add:
+
+```bash
+# resolve the token from a file so the secret never sits in the rc itself
+MEM0_MCP_TOKEN="${MEM0_MCP_TOKEN:-$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?MEM0_MCP_TOKEN=["'"']?([^"'"'[:space:]*)["'"'[:space:]]*$/\2/p' "$HOME/.config/crush/ollama.env" 2>/dev/null | head -n1)}"
+
+mcp add mem0 --type http \
+  --url "http://<docker-host>:8300/mcp" \
+  --header Authorization "Bearer $MEM0_MCP_TOKEN"
+```
+
+Put the token in place (create the file if needed):
+
+```bash
+printf 'MEM0_MCP_TOKEN=%s\n' "$(grep ^MCP_BEARER_TOKEN secrets.env | cut -d= -f2)" \
+  >> ~/.config/crush/ollama.env
+chmod 600 ~/.config/crush/ollama.env
+```
+
+Restart crush (a running TUI keeps its startup config). Verify inside the TUI with `/` (memory tools appear), or from bash:
+
+```bash
+crush run "search my memory for: favorite color"
+```
+
+Optional (Crush-side behavior config, in the same crushrc):
+- The MCP server advertises instructions telling the agent to `search_memory` before answering user questions and to `add_memory` durable facts.
+- `user_id`: pass the email-like id you also use in Open WebUI (see step 7) so both clients share one space.
+
+### 7. Integrate with Open WebUI
+
+**7a. Reach the mem0 API from Open WebUI**
+- If Open WebUI runs in the **same docker compose** (or same docker network): the filter can use `http://mem0:8000` directly — the service name resolves inside the network.
+- If Open WebUI runs elsewhere: publish mem0 on the LAN first. Replace the `ports:` line for `mem0` in `docker-compose.yml`:
+
+  ```yaml
+      ports:
+        - "8000:8000"   # LAN-reachable; MEM0_API_KEY is still required on every call
+  ```
+
+  then `docker compose up -d mem0`. (The API key requirement is what keeps this safe.)
+
+**7b. Register the filter (Function) in Open WebUI**
+
+1. Open WebUI → sign in as **admin** → **Admin Panel** (bottom-left gear) → **Functions**.
+2. Click **+** (new Function).
+3. Give it any Name (e.g. `mem0_memory`), and paste the full contents of
+   [`openwebui-filter/openwebui_mem0_filter.py`](openwebui-filter/openwebui_mem0_filter.py)
+   into the code editor.
+4. **Save**. Flip the function's toggle to **Active** on the Functions list page.
+5. Click the function's **valves/settings (gear)** icon and set:
+   - `mem0_url`: `http://mem0:8000` (same network) or `http://<docker-host>:8000` (LAN)
+   - `mem0_api_key`: the value of `MEM0_API_KEY` from `secrets.env`
+   - `user_id_field`: `email` (recommended — the account email matches the `user_id` MCP clients pass, so both share one memory space)
+   - leave the rest at defaults (`top_k 8`, `threshold 0.35`, `search_timeout 60`, `learn on`)
+6. In the Functions list, enable **Global** on the function so every model/chat uses it (or leave it off and enable per-user via User Valves).
+
+**7c. Verify the OWUI wiring**
+
+1. Start a chat with any model, say something memorable ("my favorite robot is R2-D2").
+2. Within ~30 s you should see a `recalled/stored` status hint (if `show_status` is on) — the outlet learned the fact.
+3. From the mem0 REST API directly:
 
    ```bash
-   # OLLAMA_API_KEY=<your-ollama-cloud-key>   # optional: fact extraction via Ollama Cloud
-   MEM0_API_KEY=$(openssl rand -hex 24)       # mem0 REST API + MCP wrapper auth
-   MEM0_MCP_TOKEN=$(openssl rand -hex 24)     # the MCP endpoint's own LAN bearer
+   curl -s "http://127.0.0.1:8000/memories?user_id=<account-email>" \
+     -H "Authorization: Bearer $(grep ^MEM0_API_KEY secrets.env | cut -d= -f2)"
    ```
 
-   Without `OLLAMA_API_KEY` the mem0 server falls back to a local Ollama model for fact extraction.
+4. From Crush (step 6 installed): `search my memory for: favorite robot` — the same fact comes back.
 
-2. `docker compose up -d --build`
-
-3. Wire an MCP client at `http://<host>:8300/mcp` with header
-   `Authorization: Bearer $MEM0_MCP_TOKEN`:
-
-   ```bash
-   # Crush (~/.config/crush/crushrc) — https://github.com/charmbracelet/crush
-   mcp add mem0 --type http \
-     --url "http://<host>:8300/mcp" \
-     --header Authorization "Bearer $MEM0_MCP_TOKEN"
-
-   # Claude Code / any streamable-HTTP MCP client:
-   #   type: http, url: http://<host>:8300/mcp,
-   #   headers: {Authorization: "Bearer <MEM0_MCP_TOKEN>"}
-   ```
-
-4. **Open WebUI**: Admin → Functions → new Function → paste
-   [`openwebui-filter/openwebui_mem0_filter.py`](openwebui-filter/openwebui_mem0_filter.py),
-   enable it globally (and/or per user). Set its `mem0_url` valve to
-   `http://mem0:8000` (compose service name) and `mem0_api_key` to `$MEM0_API_KEY`.
-
-Now a chat in Open WebUI and a Crush session on any machine see the same memories.
+**Why user_id_field=email matters**: memories are keyed per `user_id`. Choose **one canonical id per person** (the Open WebUI account email is a good one) and use it consistently in MCP calls and the OWUI filter, or you'll end up with parallel memory spaces for the same person.
 
 ## MCP tools
 
