@@ -216,6 +216,7 @@ so behavior stays identical whether called over MCP or plain HTTP.
 | `MEM0_API_KEY` | *(empty)* | Bearer sent to the mem0 REST API |
 | `MCP_BEARER_TOKEN` | random per boot (logged) | The MCP endpoint's own required bearer |
 | `MEM0_DEFAULT_USER` | *(empty)* | Default `user_id` for tools; keep empty to force explicit user ids |
+| `MEM0_ALLOWED_USERS` | *(unset — allow all)* | Comma-separated allowlist of memory spaces (`user_id`s) the tools may touch. Unset = any user id (single-operator default). When set: the 4 user-scoped tools reject foreign `user_id`s, and the 4 memory-id tools (`get`/`update`/`history`/`delete`) check the memory's owner before acting — one bearer can no longer enumerate other users' spaces |
 | `MCP_PUBLIC_URL` | `http://localhost:8300` | Issuer/resource-server URL for mcp 2.x `AuthSettings` |
 | `MEM0_ALLOW_WIPE_DEFAULT` | unset | Opt-in to allow wiping the default user's whole space |
 

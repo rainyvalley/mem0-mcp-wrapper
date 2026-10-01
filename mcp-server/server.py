@@ -27,6 +27,51 @@ DEFAULT_USER = os.environ.get("MEM0_DEFAULT_USER", "")
 # env (e.g. mcp.env via env_file); unset -> random per boot, logged once at startup
 # (ephemeral fallback: every restart rotates it, so prefer the env file).
 MCP_BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN") or secrets.token_urlsafe(24)
+# Optional allowlist of memory spaces (user_ids) tools may touch, comma-separated.
+# Unset/empty = allow any user_id (single-operator homelab default). When set, a
+# tool call naming a user_id outside the list is refused - cheap multi-user scoping
+# so one bearer can't enumerate everyone's memories.
+MEM0_ALLOWED_USERS = [u.strip() for u in os.environ.get("MEM0_ALLOWED_USERS", "").split(",") if u.strip()]
+
+
+def _check_user(user_id: str) -> str | None:
+    """Return a refusal message when user_id is not allowed, else None."""
+    if not MEM0_ALLOWED_USERS:
+        return None
+    if user_id in MEM0_ALLOWED_USERS:
+        return None
+    return (f"user_id {user_id!r} is not allowed on this server (MEM0_ALLOWED_USERS: "
+            f"{', '.join(MEM0_ALLOWED_USERS)}).")
+
+
+def _deny_if_memory_not_allowed(memory: dict) -> str | None:
+    """Gate for memory_id-scoped tools: the fetched memory carries its owner."""
+    if not MEM0_ALLOWED_USERS:
+        return None
+    owner = (memory or {}).get("user_id", "")
+    if owner in MEM0_ALLOWED_USERS:
+        return None
+    return ("memory belongs to user_id "
+            f"{owner!r}, which is not allowed on this server (MEM0_ALLOWED_USERS: "
+            f"{', '.join(MEM0_ALLOWED_USERS)}.")
+
+
+def _get_memory_safe(memory_id: str) -> tuple[dict | None, str | None, str | None]:
+    """Fetch a memory; returns (memory, deny_message, error_message)."""
+    try:
+        with _client() as c:
+            r = c.get(f"/memories/{memory_id}")
+            r.raise_for_status()
+            m = r.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None, f"Memory {memory_id} not found.", None
+        return None, None, _tool_err("get", e)
+    except Exception as e:
+        return None, None, _tool_err("get", e)
+    if (deny := _deny_if_memory_not_allowed(m)) is not None:
+        return None, deny, None
+    return m, None, None
 
 
 class StaticTokenVerifier:
@@ -87,6 +132,8 @@ def search_memory(query: str, user_id: str = DEFAULT_USER, top_k: int = 8, thres
         top_k: Maximum number of memories to return.
         threshold: Minimum similarity score (0-1) for a memory to be returned.
     """
+    if (deny := _check_user(user_id)) is not None:
+        return deny
     try:
         with _client() as c:
             r = c.post("/search", json={"query": query[:2000], "user_id": user_id,
@@ -112,6 +159,8 @@ def add_memory(messages: str, user_id: str = DEFAULT_USER, infer: bool = True) -
         infer: When true, an LLM extracts the durable facts from the messages
             (recommended). When false, the raw message text is stored as-is.
     """
+    if (deny := _check_user(user_id)) is not None:
+        return deny
     try:
         msgs = json.loads(messages)
     except json.JSONDecodeError as e:
@@ -142,6 +191,8 @@ def list_memories(user_id: str = DEFAULT_USER, limit: int = 1000) -> str:
         user_id: Memory space owner (user email). Defaults to the primary user.
         limit: Maximum number of memories to return.
     """
+    if (deny := _check_user(user_id)) is not None:
+        return deny
     try:
         with _client() as c:
             r = c.get("/memories", params={"user_id": user_id, "limit": limit})
@@ -161,17 +212,11 @@ def get_memory(memory_id: str) -> str:
     Args:
         memory_id: UUID of the memory (get IDs from search_memory or list_memories).
     """
-    try:
-        with _client() as c:
-            r = c.get(f"/memories/{memory_id}")
-            r.raise_for_status()
-            m = r.json()
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return f"Memory {memory_id} not found."
-        return _tool_err("get", e)
-    except Exception as e:
-        return _tool_err("get", e)
+    m, deny, err = _get_memory_safe(memory_id)
+    if deny:
+        return deny
+    if err:
+        return err
     return json.dumps(m, ensure_ascii=False, indent=1)
 
 
@@ -195,6 +240,11 @@ def update_memory(memory_id: str, text: str = "", metadata_json: str = "") -> st
             body["metadata"] = json.loads(metadata_json)
         except json.JSONDecodeError as e:
             return f"metadata_json must be a JSON object: {e}"
+    _, deny, err = _get_memory_safe(memory_id)
+    if deny:
+        return deny
+    if err:
+        return err
     try:
         with _client() as c:
             r = c.put(f"/memories/{memory_id}", json=body)
@@ -211,6 +261,11 @@ def memory_history(memory_id: str) -> str:
     Args:
         memory_id: UUID of the memory to inspect.
     """
+    _, deny, err = _get_memory_safe(memory_id)
+    if deny:
+        return deny
+    if err:
+        return err
     try:
         with _client() as c:
             r = c.get(f"/memories/{memory_id}/history")
@@ -236,6 +291,11 @@ def delete_memory(memory_id: str) -> str:
     Args:
         memory_id: UUID of the memory to delete.
     """
+    _, deny, err = _get_memory_safe(memory_id)
+    if deny:
+        return deny
+    if err:
+        return err
     try:
         with _client() as c:
             r = c.delete(f"/memories/{memory_id}")
@@ -252,6 +312,8 @@ def delete_all_memories(user_id: str) -> str:
     Args:
         user_id: Memory space owner (user email) whose memories will be wiped.
     """
+    if (deny := _check_user(user_id)) is not None:
+        return deny
     if user_id == DEFAULT_USER and not os.environ.get("MEM0_ALLOW_WIPE_DEFAULT", ""):
         return (f"Refusing to wipe the default user ({user_id}) without MEM0_ALLOW_WIPE_DEFAULT set "
                 "in the mem0-mcp container — wipe test/secondary users by their own id.")
