@@ -315,6 +315,7 @@ every angle you have.
 
 - **Two separate secrets**: `MEM0_API_KEY` (REST API + wrapper) and `MCP_BEARER_TOKEN` (MCP clients). Keep the MCP one machine-local (`chmod 600`).
 - Keep `mem0` and `qdrant` off the LAN (compose binds mem0 to `127.0.0.1`); only `mem0-mcp` listens on the network, and it requires the bearer.
+- **Scoping, two layers**: `MEM0_ALLOWED_USERS` gates everything the MAIN bearer may touch (unset = single-operator, all spaces). Need more people/devices? Issue **per-token grants** — `MEM0_USER_<sha256(token)[:8].upper()>=space1,space2` accepts that extra bearer (401 otherwise) and scopes every one of its tool calls to those spaces, including the memory-id tools, which check a memory's **owner** before acting. The main bearer keeps allowlist-gated global reach; unknown tokens are always rejected.
 - The `create_token`-style self-cloning risks in *your* automation layers are yours to watch — this repo only stores memories.
 
 ## License
