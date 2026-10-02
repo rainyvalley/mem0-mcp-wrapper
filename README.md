@@ -219,6 +219,7 @@ so behavior stays identical whether called over MCP or plain HTTP.
 | `MEM0_ALLOWED_USERS` | *(unset — allow all)* | Comma-separated allowlist of memory spaces (`user_id`s) the tools may touch. Unset = any user id (single-operator default). When set: the 4 user-scoped tools reject foreign `user_id`s, and the 4 memory-id tools (`get`/`update`/`history`/`delete`) check the memory's owner before acting — one bearer can no longer enumerate other users' spaces |
 | `MCP_PUBLIC_URL` | `http://localhost:8300` | Issuer/resource-server URL for mcp 2.x `AuthSettings` |
 | `MEM0_ALLOW_WIPE_DEFAULT` | unset | Opt-in to allow wiping the default user's whole space |
+| `MEM0_USER_<HASH>` | unset | Per-token scoping: grant ONE extra bearer access to listed spaces. `<HASH>` = uppercase `sha256(token)` first 8 hex chars, e.g. `MEM0_USER_E2BAE707=you@example.com,partner@example.com`. Unlisted tokens are rejected; the main `MCP_BEARER_TOKEN` always works and is governed by `MEM0_ALLOWED_USERS`
 
 ### mem0-server
 

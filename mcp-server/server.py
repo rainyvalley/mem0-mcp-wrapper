@@ -16,6 +16,7 @@ import os
 import secrets
 
 import httpx
+import contextvars
 from mcp.server.auth.provider import AccessToken
 from mcp.server.mcpserver import MCPServer
 
@@ -27,6 +28,8 @@ DEFAULT_USER = os.environ.get("MEM0_DEFAULT_USER", "")
 # env (e.g. mcp.env via env_file); unset -> random per boot, logged once at startup
 # (ephemeral fallback: every restart rotates it, so prefer the env file).
 MCP_BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN") or secrets.token_urlsafe(24)
+# identity of the caller's bearer token for the in-flight request (set by the verifier)
+CALLER_TOKEN: contextvars.ContextVar = contextvars.ContextVar("caller_token", default="")
 # Optional allowlist of memory spaces (user_ids) tools may touch, comma-separated.
 # Unset/empty = allow any user_id (single-operator homelab default). When set, a
 # tool call naming a user_id outside the list is refused - cheap multi-user scoping
@@ -49,11 +52,29 @@ def _deny_if_memory_not_allowed(memory: dict) -> str | None:
     if not MEM0_ALLOWED_USERS:
         return None
     owner = (memory or {}).get("user_id", "")
-    if owner in MEM0_ALLOWED_USERS:
+    return _check_user_for_token(CALLER_TOKEN.get(), owner)
+
+
+def _token_users(token: str) -> list[str] | None:
+    """Per-token user scoping: env var MEM0_USER_<SHA256[:8] upper>=a,b limits that
+    bearer to those memory spaces. Unlisted/unscoped tokens fall back to the global
+    MEM0_ALLOWED_USERS check instead."""
+    import hashlib
+    suffix = hashlib.sha256(token.encode()).hexdigest()[:8].upper()
+    v = os.environ.get(f"MEM0_USER_{suffix}", "")
+    if not v:
+        return None  # token unscoped individually -> global allowlist governs
+    return [u.strip() for u in v.split(",") if u.strip()]
+
+
+def _check_user_for_token(token: str, user_id: str) -> str | None:
+    users = _token_users(token)
+    if users is None:
+        return _check_user(user_id)
+    if user_id in users:
         return None
-    return ("memory belongs to user_id "
-            f"{owner!r}, which is not allowed on this server (MEM0_ALLOWED_USERS: "
-            f"{', '.join(MEM0_ALLOWED_USERS)}.")
+    return (f"user_id {user_id!r} is not allowed for this token (scoped to: "
+            f"{', '.join(users)}).")
 
 
 def _get_memory_safe(memory_id: str) -> tuple[dict | None, str | None, str | None]:
@@ -78,7 +99,14 @@ class StaticTokenVerifier:
     """TokenVerifier accepting exactly one static bearer token (our LAN secret)."""
 
     async def verify_token(self, token: str) -> AccessToken | None:
+        # main bearer (full access per MEM0_ALLOWED_USERS)
         if secrets.compare_digest(token, MCP_BEARER_TOKEN):
+            CALLER_TOKEN.set(token)
+            return AccessToken(token=token, client_id="mcp-client", scopes=[],
+                                expires_at=None, resource=None)
+        # scoped bearer: env MEM0_USER_<sha256(token)[:8].upper()>=users defines it
+        if _token_users(token) is not None:
+            CALLER_TOKEN.set(token)
             return AccessToken(token=token, client_id="mcp-client", scopes=[],
                                 expires_at=None, resource=None)
         return None
@@ -132,7 +160,7 @@ def search_memory(query: str, user_id: str = DEFAULT_USER, top_k: int = 8, thres
         top_k: Maximum number of memories to return.
         threshold: Minimum similarity score (0-1) for a memory to be returned.
     """
-    if (deny := _check_user(user_id)) is not None:
+    if (deny := _check_user_for_token(CALLER_TOKEN.get(), user_id)) is not None:
         return deny
     try:
         with _client() as c:
@@ -159,7 +187,7 @@ def add_memory(messages: str, user_id: str = DEFAULT_USER, infer: bool = True) -
         infer: When true, an LLM extracts the durable facts from the messages
             (recommended). When false, the raw message text is stored as-is.
     """
-    if (deny := _check_user(user_id)) is not None:
+    if (deny := _check_user_for_token(CALLER_TOKEN.get(), user_id)) is not None:
         return deny
     try:
         msgs = json.loads(messages)
@@ -191,7 +219,7 @@ def list_memories(user_id: str = DEFAULT_USER, limit: int = 1000) -> str:
         user_id: Memory space owner (user email). Defaults to the primary user.
         limit: Maximum number of memories to return.
     """
-    if (deny := _check_user(user_id)) is not None:
+    if (deny := _check_user_for_token(CALLER_TOKEN.get(), user_id)) is not None:
         return deny
     try:
         with _client() as c:
@@ -312,7 +340,7 @@ def delete_all_memories(user_id: str) -> str:
     Args:
         user_id: Memory space owner (user email) whose memories will be wiped.
     """
-    if (deny := _check_user(user_id)) is not None:
+    if (deny := _check_user_for_token(CALLER_TOKEN.get(), user_id)) is not None:
         return deny
     if user_id == DEFAULT_USER and not os.environ.get("MEM0_ALLOW_WIPE_DEFAULT", ""):
         return (f"Refusing to wipe the default user ({user_id}) without MEM0_ALLOW_WIPE_DEFAULT set "
